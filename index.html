@@ -1,1 +1,171 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canlı Kamera Maskesi & Yüz Blur</title>
+    <!-- Yüz takibi için MediaPipe kütüphanesi -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+    <style>
+        body { 
+            background: #121212; 
+            color: #fff; 
+            text-align: center; 
+            font-family: sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+        }
+        video { display: none; }
+        canvas { 
+            width: 100%; 
+            max-width: 400px; 
+            border-radius: 12px; 
+            border: 2px solid #00ff88; 
+            background: #000;
+        }
+        .controls { margin-top: 15px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        input[type="file"] { color: #ccc; }
+        .btn-group { display: flex; gap: 10px; }
+        button { 
+            padding: 12px 18px; 
+            border-radius: 8px; 
+            border: none; 
+            font-weight: bold; 
+            cursor: pointer; 
+        }
+        #startBtn { background: #00ff88; color: #000; }
+        #clearBtn { background: #ff4444; color: #fff; display: none; }
+        #status { font-size: 13px; color: #aaa; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+    <h2>Canlı Yüz Maskesi / Blur</h2>
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <div id="status">Durum: Bekleniyor...</div>
+
+    <div class="controls">
+        <input type="file" id="imageLoader" accept="image/*">
+        <div class="btn-group">
+            <button id="startBtn" onclick="startCamera()">Kamerayı Başlat</button>
+            <button id="clearBtn" onclick="clearImage()">Resmi Kaldır (Blur'a Dön)</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+        const clearBtn = document.getElementById('clearBtn');
+        const imageLoader = document.getElementById('imageLoader');
+
+        let customImage = null;
+        let hasCustomImage = false;
+        let detectedFaces = [];
+
+        // Resim seçme işlemi
+        imageLoader.addEventListener('change', (e) => {
+            if (!e.target.files || !e.target.files[0]) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    customImage = img;
+                    hasCustomImage = true;
+                    clearBtn.style.display = 'inline-block';
+                    statusText.innerText = "Durum: Seçilen resim yüzünüze uygulanıyor.";
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
+        });
+
+        // Seçilen resmi temizleyip tekrar blur moduna geçme
+        function clearImage() {
+            customImage = null;
+            hasCustomImage = false;
+            imageLoader.value = "";
+            clearBtn.style.display = 'none';
+            statusText.innerText = "Durum: Dosya seçilmedi, otomatik yüz blur aktif.";
+        }
+
+        // MediaPipe Yüz Algılama Kurulumu
+        const faceDetection = new FaceDetection({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+        });
+
+        faceDetection.setOptions({
+            model: 'short',
+            minDetectionConfidence: 0.5
+        });
+
+        faceDetection.onResults((results) => {
+            detectedFaces = results.detections || [];
+        });
+
+        async function startCamera() {
+            try {
+                statusText.innerText = "Durum: Kamera açılıyor...";
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user' }, 
+                    audio: false 
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    statusText.innerText = hasCustomImage 
+                        ? "Durum: Seçilen resim yüzünüze uygulanıyor." 
+                        : "Durum: Dosya seçilmedi, otomatik yüz blur aktif.";
+                    processLoop();
+                };
+            } catch (err) {
+                alert("Kamera izni alınamadı: " + err);
+                statusText.innerText = "Hata: Kamera izni reddedildi.";
+            }
+        }
+
+        async function processLoop() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // Yüz tespiti için kareyi gönder
+                await faceDetection.send({ image: video });
+
+                // Arka plana normal kamera görüntüsünü çiz
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // Algılanan her yüz için işlem yap
+                detectedFaces.forEach(detection => {
+                    const box = detection.boundingBox;
+                    // Koordinatları piksele çevir ve biraz pay (padding) ekle
+                    const padding = 20;
+                    const x = (box.xCenter * canvas.width) - ((box.width * canvas.width) / 2) - padding;
+                    const y = (box.yCenter * canvas.height) - ((box.height * canvas.height) / 2) - padding;
+                    const w = (box.width * canvas.width) + (padding * 2);
+                    const h = (box.height * canvas.height) + (padding * 2);
+
+                    if (hasCustomImage && customImage) {
+                        // Dosya seçildiyse yüzün üstüne resmi çiz
+                        ctx.drawImage(customImage, x, y, w, h);
+                    } else {
+                        // Dosya seçilmediyse yüz bölgesini bulanıklaştır (Blur)
+                        ctx.save();
+                        ctx.beginPath();
+                        // Yüzü oval şekilde kırp
+                        ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+                        ctx.clip();
+                        
+                        ctx.filter = 'blur(22px)';
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        ctx.restore();
+                    }
+                });
+            }
+            requestAnimationFrame(processLoop);
+        }
+    </script>
+</body>
+</html>
 
